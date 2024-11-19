@@ -3,97 +3,116 @@ import random
 
 from fishing_game_core.game_tree import Node
 from fishing_game_core.player_utils import PlayerController
-from fishing_game_core.shared import ACTION_TO_STR
+from fishing_game_core.shared import ACTION_TO_STR, TYPE_TO_SCORE
 import math
-from copy import deepcopy
+from time import time
+
 
 def utility_fn(player, node):
-    if player == "A":
-        return node.state.player_scores[0]
-    elif player == 'B':
-        return node.state.player_scores[1]
-    else:
-        raise ValueError(f"Invalid player: {player}!")
-
-def get_movement(node1, node2):
-    xA0, yA0 = node1.state.hook_positions[0] # node
-    xA1, yA1 = node2.state.hook_positions[0] # child
-    if (xA0 == 19 and xA1 == 0) and xA0 - xA1 < 0: # 18 - 19
-        return 'right'
-    elif (xA0 == 0 and xA1 == 19) and xA0 - xA1 > 0:
-        return 'left'
-    elif (yA0 - yA1 < 0): # 0 1
-        return 'down'
-    elif (yA0 - yA1 > 0): # 1 0
-        return 'up'
-    elif xA0 == xA1 and yA0 == yA1:
-        return 'stay'
-    else:
-        raise ValueError(f"Fucking bugs! ({xA0}, {yA0}) ({xA1}, {yA1})!")
+    """计算节点的评估值，考虑当前分数、正在捕获的鱼和距离最近的鱼的距离"""
+    state = node.state
+    player_scores = state.get_player_scores()
+    caught = state.get_caught()
+    hook_positions = state.get_hook_positions()
+    fish_positions = state.get_fish_positions()
+    fish_scores = state.get_fish_scores()
     
+    # 计算基础分数差
+    score_diff = player_scores[0] - player_scores[1]
+    
+    # 考虑正在捕获的鱼
+    p0_score = TYPE_TO_SCORE[caught[0]] if caught[0] is not None else 0
+    p1_score = TYPE_TO_SCORE[caught[1]] if caught[1] is not None else 0
+    
+    # 计算到最近的正分值鱼的距离
+    closest_fish_distance = float('inf')
+    if not caught[0] and fish_positions:  # 如果没有在捕鱼，才考虑距离
+        for fish_idx, fish_pos in fish_positions.items():
+            if fish_scores[fish_idx] > 0:  # 只考虑正分值的鱼
+                dist = math.hypot(
+                    hook_positions[0][0] - fish_pos[0],
+                    hook_positions[0][1] - fish_pos[1]
+                )
+                closest_fish_distance = min(closest_fish_distance, dist)
+    
+    distance_factor = 0 if closest_fish_distance == float('inf') else closest_fish_distance * 0.1
+    
+    # 计算总分
+    final_score = score_diff + p0_score - p1_score - distance_factor
+    
+    return final_score if player == 'A' else -final_score
 
 class AlphaBetaAlg(object):
-    def __init__(self):
+    def __init__(self, init_depth=3):
+        self.init_depth = init_depth
         self.next_move = None
-        self.best_score = - math.inf
+        self.start_time = time()
+        self.time_limit = 0.1  # 100ms
+        self.found_good_move = False
     
-    def alphabeta(self, node: Node, depth, alpha, beta, player):
-        if depth == 0 and node.compute_and_get_children():
-            v = utility_fn(player, node)
-        elif player == 'A':
-            v = - math.inf
-            for child in node.compute_and_get_children():
-                v = max(v, self.alphabeta(child, depth-1, alpha, beta, 'B'))
-                if v > alpha:
-                    alpha = v
-                    if alpha > self.best_score:
-                        self.best_score = max(alpha, self.best_score)
-                        self.next_move = get_movement(node, child)
-                        print("Debug: ", node, child)
-                if beta <= alpha:
+    def is_time_left(self):
+        """检查是否还有足够的时间继续搜索"""
+        return time() - self.start_time < self.time_limit
+    
+    def alphabeta(self, node, depth, alpha, beta, player):
+        # 时间检查
+        if not self.is_time_left():
+            # 如果时间不够，返回当前节点的评估值
+            score = utility_fn(player, node)
+            return score
+            
+        # 到达叶子节点或深度限制
+        if depth == 0 or not node.compute_and_get_children():
+            score = utility_fn(player, node)
+            # 检查是否抓到了正分值的鱼
+            caught = node.state.get_caught()
+            if caught[0] is not None and TYPE_TO_SCORE[caught[0]] > 0:
+                self.found_good_move = True
+            return score
+            
+        children = node.compute_and_get_children()
+        
+        if player == 'A':
+            v = float('-inf')
+            best_move = 'stay'
+            
+            for child in children:
+                score = self.alphabeta(child, depth-1, alpha, beta, 'B')
+                
+                if score > v:
+                    v = score
+                    if depth == self.init_depth:
+                        next_move = child.move if child.move is not None else 0
+                        self.next_move = ACTION_TO_STR[next_move]
+                        # print(f"更新最佳移动: {self.next_move}, 分数: {v}")
+                        
+                alpha = max(alpha, v)
+                if beta <= alpha or self.found_good_move:
                     break
-        elif player == 'B':
-            v = math.inf
-            for child in node.compute_and_get_children():
-                v = min(v, self.alphabeta(child, depth-1, alpha, beta, 'A'))
-                if v < beta:
-                    beta = v
-                if beta <= alpha:
+                    
+        else:  # player B
+            v = float("inf")
+            for child in children:
+                score = self.alphabeta(child, depth-1, alpha, beta, 'A')
+                v = min(v, score)
+                beta = min(beta, v)
+                if beta <= alpha or self.found_good_move:
                     break
+        
         return v
 
-# def compute_next_move(node, depth, alpha, beta, player):
-#     # next_move = None
-#     # best_score = - math.inf
-#     recorder = []
-#     def alphabeta(node: Node, depth, alpha, beta, player):
-#         if depth == 0 and node.compute_and_get_children():
-#             v = utility_fn(player, node)
-#         elif player == 'A':
-#             v = - math.inf
-#             for child in node.compute_and_get_children():
-#                 v = max(v, alphabeta(child, depth-1, alpha, beta, 'B'))
-#                 if v > alpha:
-#                     alpha = v
-#                     recorder.append([alpha, get_movement(node, child)])
-#                     # if alpha > best_score:
-#                     #     best_score = max(alpha, best_score)
-#                     #     next_move = get_movement(node, child)
-#                 if beta <= alpha:
-#                     break
-#         elif player == 'B':
-#             v = math.inf
-#             for child in node.compute_and_get_children():
-#                 v = min(v, alphabeta(child, depth-1, alpha, beta, 'A'))
-#                 if v < beta:
-#                     beta = v
-#                 if beta <= alpha:
-#                     break
-#         return v
-#     print(recorder)
-#     sorted_recoder = sorted(recorder, key=lambda x: -x[0])
-#     return sorted_recoder[0][1]
-
+def make_decision(initial_node):
+    """主决策函数"""
+    for depth in range(1, 5):  # 迭代加深
+        agent = AlphaBetaAlg(init_depth=depth)
+        score = agent.alphabeta(initial_node, depth, float("-inf"), float("inf"), 'A')
+        
+        # 如果找到了好的移动或时间不够，就返回
+        if agent.found_good_move or not agent.is_time_left():
+            print(f"深度 {depth} 完成, 选择移动: {agent.next_move}")
+            return agent.next_move
+            
+    return agent.next_move  # 如果没有特别好的移动，返回最后计算的结果
 
 class PlayerControllerHuman(PlayerController):
     def player_loop(self):
@@ -153,12 +172,5 @@ class PlayerControllerMinimax(PlayerController):
         
         # NOTE: Don't forget to initialize the children of the current node
         #       with its compute_and_get_children() method!
-        # alpha, beta = 0, 0 # alpha and beta are zeros at the begining
-        # cur_player = 'A'
-        # depth = 2
-        # random_move = random.randrange(5)
-        # return ACTION_TO_STR[random_move]
-        agent = AlphaBetaAlg()
-        agent.alphabeta(initial_tree_node, 2, 0, 0, 'A')
-        print("Debug: ", agent.next_move)
-        return agent.next_move
+        next_move = make_decision(initial_tree_node)
+        return next_move
