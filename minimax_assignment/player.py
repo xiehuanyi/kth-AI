@@ -17,54 +17,80 @@ def utility_fn(player, node):
     fish_positions = state.get_fish_positions()
     fish_scores = state.get_fish_scores()
     
-    # 计算基础分数差
     score_diff = player_scores[0] - player_scores[1]
     
-    # 考虑正在捕获的鱼
     p0_score = TYPE_TO_SCORE[caught[0]] if caught[0] is not None else 0
     p1_score = TYPE_TO_SCORE[caught[1]] if caught[1] is not None else 0
     
-    # 计算到最近的正分值鱼的距离
     closest_fish_distance = float('inf')
     if not caught[0] and fish_positions:  # 如果没有在捕鱼，才考虑距离
         for fish_idx, fish_pos in fish_positions.items():
-            if fish_scores[fish_idx] > 0:  # 只考虑正分值的鱼
-                dist = math.hypot(
-                    hook_positions[0][0] - fish_pos[0],
-                    hook_positions[0][1] - fish_pos[1]
-                )
-                closest_fish_distance = min(closest_fish_distance, dist)
-    
-    distance_factor = 0 if closest_fish_distance == float('inf') else closest_fish_distance * 0.1
-    
-    # 计算总分
-    final_score = score_diff + p0_score - p1_score - distance_factor
+            if fish_scores[fish_idx] > 0 and caught[1] != fish_idx:  # 只考虑正分值的鱼 & 没被捕获的鱼
+                dist = abs(hook_positions[0][0] - fish_pos[0]) + abs(hook_positions[0][1] - fish_pos[1])
+                closest_fish_distance = min(dist, closest_fish_distance)
+    distance_factor = 0 if closest_fish_distance == float('inf') else closest_fish_distance
+    dist_score = 0.
+    if not caught[0] and fish_positions:  # 如果没有在捕鱼，才考虑距离
+        for fish_idx, fish_pos in fish_positions.items():
+            if fish_scores[fish_idx] > 0 and caught[1] != fish_idx:  
+                dist = abs(hook_positions[0][0] - fish_pos[0]) + abs(hook_positions[0][1] - fish_pos[1])
+                # considering the value of fishes.
+                if dist * fish_scores[fish_idx] != 0:
+                    dist_score += (1 / dist  * fish_scores[fish_idx])
+    final_score = score_diff + p0_score - p1_score + dist_score - distance_factor * 20
     
     return final_score if player == 'A' else -final_score
+
+# def utility_fn(player, node):
+#     """计算节点的评估值，考虑当前分数、正在捕获的鱼和距离最近的鱼的距离"""
+#     state = node.state
+#     player_scores = state.get_player_scores()
+#     caught = state.get_caught()
+#     hook_positions = state.get_hook_positions()
+#     fish_positions = state.get_fish_positions()
+#     fish_scores = state.get_fish_scores()
+    
+#     # score difference before
+#     score_diff = player_scores[0] - player_scores[1]
+    
+#     # fish scores.
+#     p0_score = TYPE_TO_SCORE[caught[0]] if caught[0] is not None else 0
+#     p1_score = TYPE_TO_SCORE[caught[1]] if caught[1] is not None else 0
+    
+#     # calculating the nearest fishes' distances with positive scores.
+#     closest_fish_distance = float('inf')
+#     if not caught[0] and fish_positions:  
+#         for fish_idx, fish_pos in fish_positions.items():
+#             if fish_scores[fish_idx] > 0:  
+#                 dist = math.hypot(
+#                     hook_positions[0][0] - fish_pos[0],
+#                     hook_positions[0][1] - fish_pos[1]
+#                 )
+#                 closest_fish_distance = min(closest_fish_distance, dist)
+    
+#     distance_factor = 0 if closest_fish_distance == float('inf') else closest_fish_distance * 0.1
+    
+#     # 计算总分
+#     final_score = score_diff + p0_score - p1_score - distance_factor
+    
+#     return final_score if player == 'A' else -final_score
 
 class AlphaBetaAlg(object):
     def __init__(self, init_depth=3):
         self.init_depth = init_depth
         self.next_move = None
         self.start_time = time()
-        self.time_limit = 0.1  # 100ms
+        self.time_limit = 0.08  # 100ms
         self.found_good_move = False
     
     def is_time_left(self):
-        """检查是否还有足够的时间继续搜索"""
         return time() - self.start_time < self.time_limit
     
     def alphabeta(self, node, depth, alpha, beta, player):
-        # 时间检查
         if not self.is_time_left():
-            # 如果时间不够，返回当前节点的评估值
-            score = utility_fn(player, node)
-            return score
-            
-        # 到达叶子节点或深度限制
+            raise TimeoutError("Timeout")
         if depth == 0 or not node.compute_and_get_children():
             score = utility_fn(player, node)
-            # 检查是否抓到了正分值的鱼
             caught = node.state.get_caught()
             if caught[0] is not None and TYPE_TO_SCORE[caught[0]] > 0:
                 self.found_good_move = True
@@ -75,44 +101,43 @@ class AlphaBetaAlg(object):
         if player == 'A':
             v = float('-inf')
             best_move = 'stay'
-            
             for child in children:
+                if  not self.is_time_left():
+                    raise TimeoutError("Timeout")
                 score = self.alphabeta(child, depth-1, alpha, beta, 'B')
-                
                 if score > v:
                     v = score
                     if depth == self.init_depth:
                         next_move = child.move if child.move is not None else 0
                         self.next_move = ACTION_TO_STR[next_move]
-                        # print(f"更新最佳移动: {self.next_move}, 分数: {v}")
-                        
                 alpha = max(alpha, v)
-                if beta <= alpha or self.found_good_move:
+                if beta <= alpha or self.found_good_move or not self.is_time_left():
                     break
                     
         else:  # player B
             v = float("inf")
             for child in children:
+                if  not self.is_time_left():
+                    raise TimeoutError("Timeout")
                 score = self.alphabeta(child, depth-1, alpha, beta, 'A')
                 v = min(v, score)
                 beta = min(beta, v)
                 if beta <= alpha or self.found_good_move:
                     break
-        
         return v
 
 def make_decision(initial_node):
-    """主决策函数"""
-    for depth in range(1, 5):  # 迭代加深
-        agent = AlphaBetaAlg(init_depth=depth)
+    depth = 7
+    
+    agent = AlphaBetaAlg(init_depth=depth)
+    try:
         score = agent.alphabeta(initial_node, depth, float("-inf"), float("inf"), 'A')
-        
-        # 如果找到了好的移动或时间不够，就返回
-        if agent.found_good_move or not agent.is_time_left():
-            print(f"深度 {depth} 完成, 选择移动: {agent.next_move}")
-            return agent.next_move
-            
-    return agent.next_move  # 如果没有特别好的移动，返回最后计算的结果
+    except TimeoutError as e:
+        print(e)
+    if agent.found_good_move or not agent.is_time_left():
+        print(f"depth {depth} done, movement: {agent.next_move}")
+        return agent.next_move
+    return agent.next_move
 
 class PlayerControllerHuman(PlayerController):
     def player_loop(self):
